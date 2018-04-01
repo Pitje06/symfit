@@ -684,6 +684,7 @@ class TakesData(object):
                 if dataset is not None:
                     self.data[name] = np.array(dataset)
         self.sigmas = {name: self.data[name] for name in var_names if name.startswith('sigma_')}
+        self.sigmas_provided = any(s is not None for s in  self.sigmas.values())
 
         # Replace sigmas that are constant by an array of that constant
         for var, sigma in self.model.sigmas.items():
@@ -840,8 +841,11 @@ class HasCovarianceMatrix(object):
         if isinstance(self.objective, LogLikelihood):
             # Loglikelihood is a special case that needs to be considered
             # separately, see #138
-            return None
-        elif len(set(arr.shape for arr in self.sigma_data.values())) == 1:
+            jac = self.objective.eval_jacobian(apply_func=lambda x: x, **key2str(best_fit_params))
+            cov_matrix_inv = np.tensordot(jac, jac, (range(1, jac.ndim), range(1, jac.ndim)))
+            cov_mat = np.linalg.inv(cov_matrix_inv)
+            return cov_mat
+        if len(set(arr.shape for arr in self.sigma_data.values())) == 1:
             # Shapes of all sigma data identical
             return self._cov_mat_equal_lenghts(best_fit_params=best_fit_params)
         else:
@@ -1104,7 +1108,7 @@ class LinearLeastSquares(BaseFit):
         self._fit_results = FitResults(
             model=self.model,
             popt=[best_fit_params[param] for param in self.model.params],
-            pcov=cov_matrix,
+            covariance_matrix=cov_matrix,
             infodic={'nfev': 0},
             mesg='',
             ier=0,
@@ -1180,7 +1184,7 @@ class NonLinearLeastSquares(BaseFit):
         self._fit_results = FitResults(
             model=self.model,
             popt=[float(fit_params[param]) for param in self.model.params],
-            pcov=cov_matrix,
+            covariance_matrix=cov_matrix,
             infodic={'nfev': i},
             mesg='',
             ier=0,
@@ -1258,7 +1262,12 @@ class Fit(TakesData, HasCovarianceMatrix):
 
         if objective is None:
             objective = LeastSquares
-
+        elif objective == LogLikelihood or isinstance(objective, LogLikelihood):
+            if self.sigmas_provided:
+                raise NotImplementedError(
+                    'LogLikelihood fitting does not currently support data '
+                    'weights.'
+                )
         # Initialise the objective if it's not initialised already
         if isinstance(objective, BaseObjective):
             self.objective = objective
